@@ -85,8 +85,17 @@ class NoU_Agent {
         float gyroscope_x_offset = 0, gyroscope_y_offset = 0, gyroscope_z_offset = 0;
 
         float roll = 0, pitch = 0, yaw = 0;
-        
+
         volatile serviceLightState stateServiceLight;
+
+    private:
+        // Calibration state, guarded by the IMU spinlock: while
+        // calibrationActive is set, updateLSM6() accumulates raw readings
+        // here and calibrateIMUs() averages them into the offsets.
+        bool calibrationActive = false;
+        float calSumAccelX = 0, calSumAccelY = 0, calSumAccelZ = 0;
+        float calSumGyroX = 0, calSumGyroY = 0, calSumGyroZ = 0;
+        uint32_t calNumAccelSamples = 0, calNumGyroSamples = 0;
 };
 
 class NoU_Motor {

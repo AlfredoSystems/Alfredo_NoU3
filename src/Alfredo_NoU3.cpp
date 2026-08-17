@@ -142,19 +142,6 @@ void NoU_Agent::beginMotors()
 
 void NoU_Agent::beginIMUs()
 {
-    if (lsm6_task_handle != NULL)
-    {
-        vTaskDelete(lsm6_task_handle);
-        lsm6_task_handle = NULL;
-        detachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_LSM6));
-    }
-    if (mmc5_task_handle != NULL)
-    {
-        vTaskDelete(mmc5_task_handle);
-        mmc5_task_handle = NULL;
-        detachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_MMC5));
-    }
-
     // Initialize LSM6
     if (LSM6.begin(Wire1) == false)
     {
@@ -165,7 +152,11 @@ void NoU_Agent::beginIMUs()
         pinMode(PIN_INTERRUPT_LSM6, INPUT);
         attachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_LSM6), interruptRoutineLSM6, RISING);
         LSM6.enableInterrupt(); // LSM6 collects readings at 104 hz
-        xTaskCreatePinnedToCore(taskUpdateLSM6, "taskUpdateLSM6", 2048, NULL, 2, &lsm6_task_handle, 1);
+        // Tasks are created once and never deleted (deleting a task that is
+        // mid-I2C-transaction would leak the Wire1 bus mutex); re-calling
+        // beginIMUs() re-initializes the sensor and reuses the task.
+        if (lsm6_task_handle == NULL)
+            xTaskCreatePinnedToCore(taskUpdateLSM6, "taskUpdateLSM6", 2048, NULL, 2, &lsm6_task_handle, 1);
     }
 
     // Initialize MMC5
@@ -184,7 +175,8 @@ void NoU_Agent::beginIMUs()
         attachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_MMC5), interruptRoutineMMC5, RISING);
         MMC5.enableInterrupt();
 
-        xTaskCreatePinnedToCore(taskUpdateMMC5, "taskUpdateMMC5", 2048, NULL, 2, &mmc5_task_handle, 1);
+        if (mmc5_task_handle == NULL)
+            xTaskCreatePinnedToCore(taskUpdateMMC5, "taskUpdateMMC5", 2048, NULL, 2, &mmc5_task_handle, 1);
     }
 }
 
@@ -200,6 +192,13 @@ bool NoU_Agent::updateLSM6()
         acceleration_x = ax - acceleration_x_offset;
         acceleration_y = ay - acceleration_y_offset;
         acceleration_z = az - acceleration_z_offset;
+        if (calibrationActive)
+        {
+            calSumAccelX += ax;
+            calSumAccelY += ay;
+            calSumAccelZ += az;
+            calNumAccelSamples++;
+        }
         portEXIT_CRITICAL(&imu_mux);
 
         isNewData = true;
@@ -213,6 +212,13 @@ bool NoU_Agent::updateLSM6()
         gyroscope_x = gx - gyroscope_x_offset;
         gyroscope_y = gy - gyroscope_y_offset;
         gyroscope_z = gz - gyroscope_z_offset;
+        if (calibrationActive)
+        {
+            calSumGyroX += gx;
+            calSumGyroY += gy;
+            calSumGyroZ += gz;
+            calNumGyroSamples++;
+        }
         updateAngles(); // called inside the lock — reads gyro fields, writes roll/pitch/yaw
         portEXIT_CRITICAL(&imu_mux);
 
@@ -267,68 +273,37 @@ void NoU_Agent::updateAngles()
 
 void NoU_Agent::calibrateIMUs(float gravity_x, float gravity_y, float gravity_z)
 {
-    // Suspend the background task so we own the sensor and the offset fields
-    // for the duration of calibration.
-    if (lsm6_task_handle != NULL)
-        vTaskSuspend(lsm6_task_handle);
-
-    // Zero offsets so updateLSM6() accumulates raw sensor values.
+    // The background task stays the only reader of the sensor. While
+    // calibrationActive is set, updateLSM6() accumulates raw readings into
+    // the calSum* fields; we just wait a second and average them.
     portENTER_CRITICAL(&imu_mux);
-    acceleration_x_offset = 0;
-    acceleration_y_offset = 0;
-    acceleration_z_offset = 0;
-    gyroscope_x_offset = 0;
-    gyroscope_y_offset = 0;
-    gyroscope_z_offset = 0;
+    calSumAccelX = calSumAccelY = calSumAccelZ = 0;
+    calSumGyroX = calSumGyroY = calSumGyroZ = 0;
+    calNumAccelSamples = 0;
+    calNumGyroSamples = 0;
+    calibrationActive = true;
     portEXIT_CRITICAL(&imu_mux);
 
-    int num_vals = 0;
-    float acceleration_x_accumulator = 0;
-    float acceleration_y_accumulator = 0;
-    float acceleration_z_accumulator = 0;
-    float gyroscope_x_accumulator = 0;
-    float gyroscope_y_accumulator = 0;
-    float gyroscope_z_accumulator = 0;
-
-    unsigned long startTime = millis();
-    unsigned long calibrationTimeMs = 1000UL;
-
-    while (millis() - startTime < calibrationTimeMs)
-    {
-        if (newDataAvailableLSM6)
-        {
-            newDataAvailableLSM6 = false;
-            updateLSM6(); // reads sensor, writes member fields under imu_mux
-
-            // Task is suspended — no contention, read fields directly.
-            acceleration_x_accumulator += acceleration_x;
-            acceleration_y_accumulator += acceleration_y;
-            acceleration_z_accumulator += acceleration_z;
-            gyroscope_x_accumulator += gyroscope_x;
-            gyroscope_y_accumulator += gyroscope_y;
-            gyroscope_z_accumulator += gyroscope_z;
-            num_vals++;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
     portENTER_CRITICAL(&imu_mux);
-    if (num_vals > 0)
+    calibrationActive = false;
+    if (calNumAccelSamples > 0)
     {
-        acceleration_x_offset = (acceleration_x_accumulator / num_vals) - gravity_x;
-        acceleration_y_offset = (acceleration_y_accumulator / num_vals) - gravity_y;
-        acceleration_z_offset = (acceleration_z_accumulator / num_vals) - gravity_z;
-        gyroscope_x_offset = gyroscope_x_accumulator / num_vals;
-        gyroscope_y_offset = gyroscope_y_accumulator / num_vals;
-        gyroscope_z_offset = gyroscope_z_accumulator / num_vals;
+        acceleration_x_offset = (calSumAccelX / calNumAccelSamples) - gravity_x;
+        acceleration_y_offset = (calSumAccelY / calNumAccelSamples) - gravity_y;
+        acceleration_z_offset = (calSumAccelZ / calNumAccelSamples) - gravity_z;
+    }
+    if (calNumGyroSamples > 0)
+    {
+        gyroscope_x_offset = calSumGyroX / calNumGyroSamples;
+        gyroscope_y_offset = calSumGyroY / calNumGyroSamples;
+        gyroscope_z_offset = calSumGyroZ / calNumGyroSamples;
     }
     roll = 0;
     pitch = 0;
     yaw = 0;
     portEXIT_CRITICAL(&imu_mux);
-
-    if (lsm6_task_handle != NULL)
-        vTaskResume(lsm6_task_handle);
 }
 
 void NoU_Agent::stopMotors()
