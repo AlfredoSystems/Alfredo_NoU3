@@ -387,7 +387,11 @@ void PCA9685::addDeviceToGroup0(DeviceAddress device_address)
   {
     return;
   }
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sub1 = DOES_RESPOND;
   write(device_address,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
@@ -399,7 +403,11 @@ void PCA9685::removeDeviceFromGroup0(DeviceAddress device_address)
   {
     return;
   }
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sub1 = DOES_NOT_RESPOND;
   write(device_address,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
@@ -411,7 +419,11 @@ void PCA9685::addDeviceToGroup1(DeviceAddress device_address)
   {
     return;
   }
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sub2 = DOES_RESPOND;
   write(device_address,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
@@ -423,7 +435,11 @@ void PCA9685::removeDeviceFromGroup1(DeviceAddress device_address)
   {
     return;
   }
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sub2 = DOES_NOT_RESPOND;
   write(device_address,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
@@ -435,7 +451,11 @@ void PCA9685::addDeviceToGroup2(DeviceAddress device_address)
   {
     return;
   }
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sub3 = DOES_RESPOND;
   write(device_address,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
@@ -447,7 +467,11 @@ void PCA9685::removeDeviceFromGroup2(DeviceAddress device_address)
   {
     return;
   }
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sub3 = DOES_NOT_RESPOND;
   write(device_address,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
@@ -471,8 +495,10 @@ PCA9685::Frequency PCA9685::getSingleDeviceFrequency(DeviceAddress device_addres
   if (device_index >= 0)
   {
     uint8_t prescale;
-    getPrescale(device_index,prescale);
-    frequency = prescaleToFrequency(prescale);
+    if (getPrescale(device_index,prescale))
+    {
+      frequency = prescaleToFrequency(prescale);
+    }
   }
   return frequency;
 }
@@ -789,30 +815,36 @@ int PCA9685::deviceAddressToDeviceIndex(DeviceAddress device_address)
   return device_index;
 }
 
-PCA9685::Mode1Register PCA9685::readMode1Register(DeviceIndex device_index)
+bool PCA9685::readMode1Register(DeviceIndex device_index,
+  Mode1Register & mode1_register)
 {
-  Mode1Register mode1_register;
-  read(device_index,MODE1_REGISTER_ADDRESS,mode1_register.data);
-  return mode1_register;
+  return read(device_index,MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
 
-PCA9685::Mode2Register PCA9685::readMode2Register(DeviceIndex device_index)
+bool PCA9685::readMode2Register(DeviceIndex device_index,
+  Mode2Register & mode2_register)
 {
-  Mode2Register mode2_register;
-  read(device_index,MODE2_REGISTER_ADDRESS,mode2_register.data);
-  return mode2_register;
+  return read(device_index,MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::sleep(DeviceIndex device_index)
 {
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sleep = SLEEP;
   write(device_addresses_[device_index],MODE1_REGISTER_ADDRESS,mode1_register.data);
 }
 
 void PCA9685::wake(DeviceIndex device_index)
 {
-  Mode1Register mode1_register = readMode1Register(device_index);
+  Mode1Register mode1_register;
+  if (!readMode1Register(device_index,mode1_register))
+  {
+    return;
+  }
   mode1_register.fields.sleep = WAKE;
   mode1_register.fields.ai = AUTO_INCREMENT_ENABLED;
   write(device_addresses_[device_index],MODE1_REGISTER_ADDRESS,mode1_register.data);
@@ -837,7 +869,11 @@ void PCA9685::setAllDevicesToExternalClock()
   //go to sleep
   for (DeviceIndex device_index=0; device_index<device_count_; ++device_index)
   {
-    Mode1Register mode1_register = readMode1Register(device_index);
+    Mode1Register mode1_register;
+    if (!readMode1Register(device_index,mode1_register))
+    {
+      continue;
+    }
     mode1_register.fields.sleep = SLEEP;
     write(device_addresses_[device_index],MODE1_REGISTER_ADDRESS,mode1_register.data);
   }
@@ -853,7 +889,11 @@ void PCA9685::setAllDevicesToExternalClock()
   //set clock to external and wake up
   for (DeviceIndex device_index=0; device_index<device_count_; ++device_index)
   {
-    Mode1Register mode1_register = readMode1Register(device_index);
+    Mode1Register mode1_register;
+    if (!readMode1Register(device_index,mode1_register))
+    {
+      continue;
+    }
     mode1_register.fields.extclk = USE_EXTERNAL_CLOCK;
     mode1_register.fields.sleep = WAKE;
     write(device_addresses_[device_index],MODE1_REGISTER_ADDRESS,mode1_register.data);
@@ -868,10 +908,10 @@ void PCA9685::setPrescale(DeviceIndex device_index,
   wake(device_index);
 }
 
-void PCA9685::getPrescale(DeviceIndex device_index,
+bool PCA9685::getPrescale(DeviceIndex device_index,
   uint8_t & prescale)
 {
-  read(device_index,PRE_SCALE_REGISTER_ADDRESS,prescale);
+  return read(device_index,PRE_SCALE_REGISTER_ADDRESS,prescale);
 }
 
 uint8_t PCA9685::frequencyToPrescale(Frequency frequency)
@@ -987,49 +1027,77 @@ void PCA9685::pulseWidthAndPhaseShiftToServoPulseDuration(Duration pulse_width,
 
 void PCA9685::setOutputsInverted(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.invrt = OUTPUTS_INVERTED;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::setOutputsNotInverted(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.invrt = OUTPUTS_NOT_INVERTED;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::setOutputsToTotemPole(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.outdrv = OUTPUTS_TOTEM_POLE;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::setOutputsToOpenDrain(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.outdrv = OUTPUTS_OPEN_DRAIN;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::setOutputsLowWhenDisabled(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.outne = OUTPUTS_LOW_WHEN_DISABLED;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::setOutputsHighWhenDisabled(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.outne = OUTPUTS_HIGH_WHEN_DISABLED;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
 
 void PCA9685::setOutputsHighImpedanceWhenDisabled(DeviceIndex device_index)
 {
-  Mode2Register mode2_register = readMode2Register(device_index);
+  Mode2Register mode2_register;
+  if (!readMode2Register(device_index,mode2_register))
+  {
+    return;
+  }
   mode2_register.fields.outne = OUTPUTS_HIGH_IMPEDANCE_WHEN_DISABLED;
   write(device_addresses_[device_index],MODE2_REGISTER_ADDRESS,mode2_register.data);
 }
@@ -1057,26 +1125,31 @@ void PCA9685::write(DeviceAddress device_address,
 }
 
 template<typename T>
-void PCA9685::read(DeviceIndex device_index,
+bool PCA9685::read(DeviceIndex device_index,
   uint8_t register_address,
   T & data)
 {
+  data = 0;
   // No bus until setupSingleDevice()/setWire() has been called
   if (wire_ptr_ == nullptr)
   {
-    data = 0;
-    return;
+    return false;
   }
   int byte_count = sizeof(data);
   int device_address = device_addresses_[device_index];
   wire_ptr_->beginTransmission(device_address);
   wire_ptr_->write(register_address);
-  wire_ptr_->endTransmission();
-
-  wire_ptr_->requestFrom(device_address,byte_count);
-  data = 0;
+  if (wire_ptr_->endTransmission() != 0)
+  {
+    return false;
+  }
+  if (wire_ptr_->requestFrom(device_address,byte_count) != byte_count)
+  {
+    return false;
+  }
   for (int byte_n=0; byte_n<byte_count; ++byte_n)
   {
     data |= (wire_ptr_->read()) << (BITS_PER_BYTE * byte_n);
   }
+  return true;
 }

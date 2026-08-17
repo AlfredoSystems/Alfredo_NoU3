@@ -223,9 +223,11 @@ private:
     uint8_t register_address,
     T data);
   // Can only read from one device at a time
-  // so use index rather than address
+  // so use index rather than address.
+  // Returns false (and zeroes data) if the I2C transaction fails, so
+  // read-modify-write callers can abort instead of writing back garbage.
   template<typename T>
-  void read(DeviceIndex device_index,
+  bool read(DeviceIndex device_index,
     uint8_t register_address,
     T & data);
 
@@ -245,7 +247,8 @@ private:
     } fields;
     uint8_t data;
   };
-  Mode1Register readMode1Register(DeviceIndex device_index);
+  bool readMode1Register(DeviceIndex device_index,
+    Mode1Register & mode1_register);
 
   const static uint8_t MODE2_REGISTER_ADDRESS = 0x01;
   union Mode2Register
@@ -260,7 +263,8 @@ private:
     } fields;
     uint8_t data;
   };
-  Mode2Register readMode2Register(DeviceIndex device_index);
+  bool readMode2Register(DeviceIndex device_index,
+    Mode2Register & mode2_register);
 
   void sleep(DeviceIndex device_index);
   void wake(DeviceIndex device_index);
@@ -268,7 +272,7 @@ private:
 
   void setPrescale(DeviceIndex device_index,
     uint8_t prescale);
-  void getPrescale(DeviceIndex device_index,
+  bool getPrescale(DeviceIndex device_index,
     uint8_t & prescale);
   uint8_t frequencyToPrescale(Frequency frequency);
   Frequency prescaleToFrequency(uint8_t prescale);
