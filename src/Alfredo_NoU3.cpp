@@ -249,18 +249,20 @@ bool NoU_Agent::updateMMC5()
 
 void NoU_Agent::updateAngles()
 {
-    static unsigned long lastTime = 0;
+    static bool firstSample = true;
+    static unsigned long lastTimeUs = 0;
 
-    unsigned long currentTime = millis();
+    unsigned long currentTimeUs = micros();
 
-    if (lastTime == 0)
+    if (firstSample)
     {
-        lastTime = currentTime;
+        firstSample = false;
+        lastTimeUs = currentTimeUs;
         return;
     }
 
-    float timestep = (currentTime - lastTime) / 1000.0; // convert ms to seconds
-    lastTime = currentTime;
+    float timestep = (currentTimeUs - lastTimeUs) / 1000000.0; // convert us to seconds
+    lastTimeUs = currentTimeUs;
 
     float deltaPitch = gyroscope_x * timestep;
     float deltaRoll = gyroscope_y * timestep;
