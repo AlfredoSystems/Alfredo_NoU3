@@ -5,6 +5,7 @@
 
 PCA9685::PCA9685()
 {
+  wire_ptr_ = nullptr;
   device_count_ = 0;
   for (DeviceIndex device_index=0; device_index<DEVICE_COUNT_MAX; ++device_index)
   {
@@ -368,6 +369,10 @@ void PCA9685::addDevice(DeviceAddress device_address)
 
 void PCA9685::resetAllDevices()
 {
+  if (wire_ptr_ == nullptr)
+  {
+    return;
+  }
   wire_ptr_->beginTransmission(GENERAL_CALL_DEVICE_ADDRESS);
   wire_ptr_->write(SWRST);
   wire_ptr_->endTransmission();
@@ -1034,6 +1039,11 @@ void PCA9685::write(DeviceAddress device_address,
   uint8_t register_address,
   T data)
 {
+  // No bus until setupSingleDevice()/setWire() has been called
+  if (wire_ptr_ == nullptr)
+  {
+    return;
+  }
   int byte_count = sizeof(data);
   wire_ptr_->beginTransmission(device_address);
   wire_ptr_->write(register_address);
@@ -1051,6 +1061,12 @@ void PCA9685::read(DeviceIndex device_index,
   uint8_t register_address,
   T & data)
 {
+  // No bus until setupSingleDevice()/setWire() has been called
+  if (wire_ptr_ == nullptr)
+  {
+    data = 0;
+    return;
+  }
   int byte_count = sizeof(data);
   int device_address = device_addresses_[device_index];
   wire_ptr_->beginTransmission(device_address);

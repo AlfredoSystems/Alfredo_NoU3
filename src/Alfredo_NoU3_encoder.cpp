@@ -18,6 +18,11 @@ void Encoder::begin(uint8_t pinA, uint8_t pinB) {
         _index = numEncoders;
         instances[numEncoders] = this;
         numEncoders++;
+    } else {
+        // Already registered: detach the old pins so they stop feeding
+        // this encoder's ISR before we switch to the new ones.
+        detachInterrupt(digitalPinToInterrupt(_pinA));
+        detachInterrupt(digitalPinToInterrupt(_pinB));
     }
 
     _pinA = pinA;

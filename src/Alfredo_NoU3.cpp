@@ -293,7 +293,7 @@ void NoU_Agent::calibrateIMUs(float gravity_x, float gravity_y, float gravity_z)
     unsigned long startTime = millis();
     unsigned long calibrationTimeMs = 1000UL;
 
-    while (millis() < startTime + calibrationTimeMs)
+    while (millis() - startTime < calibrationTimeMs)
     {
         if (newDataAvailableLSM6)
         {
