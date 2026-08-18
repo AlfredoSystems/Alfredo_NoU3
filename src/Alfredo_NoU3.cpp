@@ -11,7 +11,7 @@
 PCA9685 pca9685;
 
 LSM6Class LSM6;
-SFE_MMC5983MA MMC5;
+MMC5983MAClass MMC5;
 
 NoU_Agent NoU3;
 
@@ -249,6 +249,8 @@ bool NoU_Agent::updateMMC5()
 
 void NoU_Agent::updateAngles()
 {
+    // micros(), not millis(): samples arrive every ~9.6 ms (104 Hz), so
+    // millisecond resolution would put ~10% jitter on each timestep.
     static bool firstSample = true;
     static unsigned long lastTimeUs = 0;
 
@@ -689,7 +691,7 @@ void NoU_Drivetrain::holonomicDrive(float latest_xVelocity, float latest_yVeloci
     if (!isnan(latest_xVelocity)) xVelocity = latest_xVelocity;
     if (!isnan(latest_yVelocity)) yVelocity = latest_yVelocity;
     if (!isnan(latest_rotation)) rotation = latest_rotation;
-    
+
     if (drivetrainType == DRIVE_TWO_MOTORS)
         return;
 

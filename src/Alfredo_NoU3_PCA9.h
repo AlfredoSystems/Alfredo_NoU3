@@ -1,374 +1,174 @@
+#pragma once
+
+// I2C driver for the NXP PCA9685 16-channel PWM controller that drives the
+// NoU3's motor H-bridges.
+//
+// Original implementation for Alfredo Systems, written against the NXP
+// datasheet register descriptions. Supports the single device on the NoU3
+// (default address 0x40).
+
 #include <Arduino.h>
 #include <Wire.h>
 
-#ifndef ALFREDO_NOU3_PCA9_H
-#define ALFREDO_NOU3_PCA9_H
+class PCA9685 {
+  public:
+    // Resets the device (I2C general-call SWRST), then wakes it with
+    // register auto-increment enabled.
+    void setupSingleDevice(TwoWire &wire, uint8_t address = 0x40) {
+      _wire = &wire;
+      _address = address;
 
-class PCA9685
-{
-public:
-  PCA9685();
+      _wire->beginTransmission(GENERAL_CALL_ADDRESS);
+      _wire->write(SWRST_COMMAND);
+      _wire->endTransmission();
+      delay(10);
 
-  typedef uint16_t Channel;
-  typedef uint8_t ChannelCount;
-  typedef uint8_t DeviceAddress;
-  typedef uint8_t DeviceIndex;
-  typedef size_t Pin;
-  typedef uint16_t Frequency;
-  typedef double Percent;
-  typedef uint16_t Time;
-  typedef uint16_t Duration;
-  typedef uint16_t DurationMicroseconds;
+      wake();
+    }
 
-  const static Channel CHANNELS_PER_DEVICE = 16;
-  enum {DEVICE_COUNT_MAX=55};
+    // The output-enable pin is active low; start disabled.
+    void setupOutputEnablePin(uint8_t pin) {
+      pinMode(pin, OUTPUT);
+      digitalWrite(pin, HIGH);
+    }
 
-  void setAllDevicesToExternalClock();
+    void enableOutputs(uint8_t pin) { digitalWrite(pin, LOW); }
+    void disableOutputs(uint8_t pin) { digitalWrite(pin, HIGH); }
 
-  // Convenience method when using a single device
-  void setupSingleDevice(TwoWire & wire=Wire,
-    DeviceAddress device_address=0x40,
-    bool fast_mode_plus=false);
+    // PWM frequency for all channels, ~24 to ~1526 Hz.
+    void setToFrequency(uint16_t frequency) {
+      if (frequency == 0)
+        return;
+      // The prescale value is linear in the PWM period. Interpolate between
+      // the two calibrated endpoints (the internal oscillator runs slightly
+      // fast, so the measured periods are shorter than the datasheet's
+      // nominal 655 and 41666 us).
+      uint32_t period_us = 1000000UL / frequency;
+      period_us = constrain(period_us, PERIOD_MIN_US, PERIOD_MAX_US);
+      uint8_t prescale = map(period_us, PERIOD_MIN_US, PERIOD_MAX_US,
+                             PRESCALE_MIN, PRESCALE_MAX);
 
-  // Methods for using a single device or multiple devices
-  void setupOutputEnablePin(Pin output_enable_pin);
-  void enableOutputs(Pin output_enable_pin);
-  void disableOutputs(Pin output_enable_pin);
+      // The prescale register can only be written while the device sleeps.
+      sleep();
+      writeRegister(_address, REG_PRESCALE, prescale);
+      wake();
+    }
 
-  Frequency getFrequencyMin();
-  Frequency getFrequencyMax();
-  void setToFrequency(Frequency frequency);
-  Frequency getFrequency();
-  void setToServoFrequency();
-  Frequency getServoFrequency();
+    // Duty cycle in percent (0-100) for one channel (0-15). percentDelay
+    // phase-shifts the pulse within the PWM period.
+    void setChannelDutyCycle(uint8_t channel, float dutyCycle, float percentDelay = 0) {
+      if (channel >= CHANNEL_COUNT)
+        return;
+      writeOnOffTimes(_address, REG_LED0_ON_L + 4 * channel, dutyCycle, percentDelay);
+    }
 
-  ChannelCount getChannelCount();
+    // Duty cycle in percent for every channel at once, via the ALL_LED
+    // registers at the LED All Call address.
+    void setAllChannelsDutyCycle(float dutyCycle, float percentDelay = 0) {
+      writeOnOffTimes(ALL_CALL_ADDRESS, REG_ALL_LED_ON_L, dutyCycle, percentDelay);
+    }
 
-  Percent getDutyCycleMin();
-  Percent getDutyCycleMax();
-  Percent getPercentDelayMin();
-  Percent getPercentDelayMax();
-  void setChannelDutyCycle(Channel channel,
-    Percent duty_cycle,
-    Percent percent_delay=0);
-  void getChannelDutyCycle(Channel channel,
-    Percent & duty_cycle,
-    Percent & percent_delay);
-  void setAllChannelsDutyCycle(Percent duty_cycle,
-    Percent percent_delay=0);
+  private:
+    enum : uint8_t {
+      REG_MODE1        = 0x00,
+      REG_LED0_ON_L    = 0x06,
+      REG_ALL_LED_ON_L = 0xFA,
+      REG_PRESCALE     = 0xFE,
+    };
 
-  Duration getPulseWidthMin();
-  Duration getPulseWidthMax();
-  Time getPhaseShiftMin();
-  Time getPhaseShiftMax();
-  void setChannelPulseWidth(Channel channel,
-    Duration pulse_width,
-    Duration phase_shift=0);
-  void getChannelPulseWidth(Channel channel,
-    Duration & pulse_width,
-    Time & phase_shift);
-  void setAllChannelsPulseWidth(Duration pulse_width,
-    Duration phase_shift=0);
+    static const uint8_t MODE1_SLEEP = 0x10;
+    static const uint8_t MODE1_AI = 0x20;      // register auto-increment
+    static const uint8_t MODE1_RESTART = 0x80; // write 1 to resume PWM after sleep
 
-  void setChannelServoPulseDuration(Channel channel,
-    DurationMicroseconds pulse_duration_microseconds);
-  void getChannelServoPulseDuration(Channel channel,
-    DurationMicroseconds & pulse_duration_microseconds);
-  void setAllChannelsServoPulseDuration(DurationMicroseconds pulse_duration_microseconds);
+    static const uint8_t GENERAL_CALL_ADDRESS = 0x00;
+    static const uint8_t SWRST_COMMAND = 0x06;
+    static const uint8_t ALL_CALL_ADDRESS = 0x70;
 
-  Time getTimeMin();
-  Time getTimeMax();
-  void setChannelOnAndOffTime(Channel channel,
-    Time on_time,
-    Time off_time);
-  void getChannelOnAndOffTime(Channel channel,
-    Time & on_time,
-    Time & off_time);
-  void setAllChannelsOnAndOffTime(Time on_time,
-    Time off_time);
-  void setChannelOnTime(Channel channel,
-    Time on_time);
-  void getChannelOnTime(Channel channel,
-    Time & on_time);
-  void setAllChannelsOnTime(Time on_time);
-  void setChannelOffTime(Channel channel,
-    Time off_time);
-  void getChannelOffTime(Channel channel,
-    Time & off_time);
-  void setAllChannelsOffTime(Time off_time);
+    static const uint8_t CHANNEL_COUNT = 16;
+    static const uint16_t COUNTS_PER_PERIOD = 4096;
 
-  void setOutputsInverted();
-  void setOutputsNotInverted();
-  void setOutputsToTotemPole();
-  void setOutputsToOpenDrain();
-  void setOutputsLowWhenDisabled();
-  void setOutputsHighWhenDisabled();
-  void setOutputsHighImpedanceWhenDisabled();
+    static const uint8_t PRESCALE_MIN = 0x03;
+    static const uint16_t PERIOD_MIN_US = 617; // measured; nominal 655 (1526 Hz)
+    static const uint8_t PRESCALE_MAX = 0xFF;
+    static const uint16_t PERIOD_MAX_US = 39525; // measured; nominal 41666 (24 Hz)
 
-  // Methods for using multiple devices
-  // Take care when using fast_mode_plus with non-PCA9685 devices
-  void setWire(TwoWire & wire=Wire,
-    bool fast_mode_plus=false);
+    void sleep() {
+      uint8_t mode1;
+      if (!readRegister(REG_MODE1, mode1))
+        return;
+      writeRegister(_address, REG_MODE1, mode1 | MODE1_SLEEP);
+    }
 
-  // device_address=0x40 when all device address
-  // hardware select lines are low
-  // cannot use reserved addresses
-  void addDevice(DeviceAddress device_address);
-  void resetAllDevices();
+    void wake() {
+      uint8_t mode1;
+      if (!readRegister(REG_MODE1, mode1))
+        return;
+      mode1 = (mode1 & ~MODE1_SLEEP) | MODE1_AI;
+      writeRegister(_address, REG_MODE1, mode1);
+      // If PWM was interrupted by sleep, the restart flag reads 1; writing
+      // it back after the oscillator settles resumes the outputs.
+      if (mode1 & MODE1_RESTART) {
+        delay(1);
+        writeRegister(_address, REG_MODE1, mode1);
+      }
+    }
 
-  void addDeviceToGroup0(DeviceAddress device_address);
-  void removeDeviceFromGroup0(DeviceAddress device_address);
-  void addDeviceToGroup1(DeviceAddress device_address);
-  void removeDeviceFromGroup1(DeviceAddress device_address);
-  void addDeviceToGroup2(DeviceAddress device_address);
-  void removeDeviceFromGroup2(DeviceAddress device_address);
+    // Convert a duty cycle and phase delay to the chip's on/off counts and
+    // write them as one auto-incremented 4-byte transfer.
+    void writeOnOffTimes(uint8_t address, uint8_t startRegister,
+                         float dutyCycle, float percentDelay) {
+      uint16_t pulse = (uint16_t)round(COUNTS_PER_PERIOD * (double)dutyCycle / 100.0);
+      uint16_t phase = (uint16_t)round(COUNTS_PER_PERIOD * (double)percentDelay / 100.0);
 
-  void setSingleDeviceToFrequency(DeviceAddress device_address,
-    Frequency frequency);
-  Frequency getSingleDeviceFrequency(DeviceAddress device_address);
-  void setAllDevicesToFrequency(Frequency frequency);
-  void setSingleDeviceToServoFrequency(DeviceAddress device_address);
-  Frequency getSingleDeviceServoFrequency(DeviceAddress device_address);
-  void setAllDevicesToServoFrequency();
+      uint16_t onTime;
+      uint16_t offTime;
+      if (pulse == 0) {
+        // Bit 12 of the off time is the full-off flag
+        onTime = 0;
+        offTime = COUNTS_PER_PERIOD;
+      } else if (pulse >= COUNTS_PER_PERIOD) {
+        // Bit 12 of the on time is the full-on flag
+        onTime = COUNTS_PER_PERIOD;
+        offTime = 0;
+      } else {
+        onTime = phase % COUNTS_PER_PERIOD;
+        offTime = (onTime + pulse) % COUNTS_PER_PERIOD;
+      }
 
-  ChannelCount getDeviceChannelCount();
+      if (_wire == nullptr)
+        return;
+      _wire->beginTransmission(address);
+      _wire->write(startRegister);
+      _wire->write(onTime & 0xFF);
+      _wire->write(onTime >> 8);
+      _wire->write(offTime & 0xFF);
+      _wire->write(offTime >> 8);
+      _wire->endTransmission();
+    }
 
-  // Use these device address to set more than one device at a time
-  // with the methods below
-  const static DeviceAddress DEVICE_ADDRESS_ALL = 0x70;
-  const static DeviceAddress DEVICE_ADDRESS_GROUP0 = 0x71;
-  const static DeviceAddress DEVICE_ADDRESS_GROUP1 = 0x72;
-  const static DeviceAddress DEVICE_ADDRESS_GROUP2 = 0x73;
+    void writeRegister(uint8_t address, uint8_t reg, uint8_t value) {
+      if (_wire == nullptr)
+        return;
+      _wire->beginTransmission(address);
+      _wire->write(reg);
+      _wire->write(value);
+      _wire->endTransmission();
+    }
 
-  void setDeviceChannelDutyCycle(DeviceAddress device_address,
-    Channel device_channel,
-    Percent duty_cycle,
-    Percent percent_delay=0);
-  void setAllDeviceChannelsDutyCycle(DeviceAddress device_address,
-    Percent duty_cycle,
-    Percent percent_delay=0);
+    bool readRegister(uint8_t reg, uint8_t &value) {
+      value = 0;
+      if (_wire == nullptr)
+        return false;
+      _wire->beginTransmission(_address);
+      _wire->write(reg);
+      if (_wire->endTransmission() != 0)
+        return false;
+      if (_wire->requestFrom(_address, (uint8_t)1) != 1)
+        return false;
+      value = _wire->read();
+      return true;
+    }
 
-  void setDeviceChannelPulseWidth(DeviceAddress device_address,
-    Channel device_channel,
-    Duration pulse_width,
-    Duration phase_shift=0);
-  void setAllDeviceChannelsPulseWidth(DeviceAddress device_address,
-    Duration pulse_width,
-    Duration phase_shift=0);
-
-  void setDeviceChannelServoPulseDuration(DeviceAddress device_address,
-    Channel device_channel,
-    DurationMicroseconds pulse_duration_microseconds);
-  void setAllDeviceChannelsServoPulseDuration(DeviceAddress device_address,
-    DurationMicroseconds pulse_duration_microseconds);
-
-  void setDeviceChannelOnAndOffTime(DeviceAddress device_address,
-    Channel device_channel,
-    Time on_time,
-    Time off_time);
-  void setAllDeviceChannelsOnAndOffTime(DeviceAddress device_address,
-    Time on_time,
-    Time off_time);
-  void setDeviceChannelOnTime(DeviceAddress device_address,
-    Channel device_channel,
-    Time on_time);
-  void setAllDeviceChannelsOnTime(DeviceAddress device_address,
-    Time on_time);
-  void setDeviceChannelOffTime(DeviceAddress device_address,
-    Channel device_channel,
-    Time off_time);
-  void setAllDeviceChannelsOffTime(DeviceAddress device_address,
-    Time off_time);
-
-  void setSingleDeviceOutputsInverted(DeviceAddress device_address);
-  void setAllDevicesOutputsInverted();
-  void setSingleDeviceOutputsNotInverted(DeviceAddress device_address);
-  void setAllDevicesOutputsNotInverted();
-  void setSingleDeviceOutputsToTotemPole(DeviceAddress device_address);
-  void setAllDevicesOutputsToTotemPole();
-  void setSingleDeviceOutputsToOpenDrain(DeviceAddress device_address);
-  void setAllDevicesOutputsToOpenDrain();
-  void setSingleDeviceOutputsLowWhenDisabled(DeviceAddress device_address);
-  void setAllDevicesOutputsLowWhenDisabled();
-  void setSingleDeviceOutputsHighWhenDisabled(DeviceAddress device_address);
-  void setAllDevicesOutputsHighWhenDisabled();
-  void setSingleDeviceOutputsHighImpedanceWhenDisabled(DeviceAddress device_address);
-  void setAllDevicesOutputsHighImpedanceWhenDisabled();
-
-private:
-  const static DeviceAddress DEVICE_ADDRESS_MIN = 0x40;
-  const static DeviceAddress DEVICE_ADDRESS_MAX = 0x7B;
-  uint8_t device_count_;
-  DeviceAddress device_addresses_[DEVICE_COUNT_MAX];
-
-  TwoWire * wire_ptr_;
-  const static long FAST_MODE_PLUS_CLOCK_FREQUENCY = 1000000;
-
-  const static int NO_OUTPUT_ENABLE_PIN = -1;
-
-  const static int DEVICE_INDEX_NONE = -1;
-  const static int DEVICE_INDEX_ALL = -2;
-  const static int DEVICE_INDEX_GROUP0 = -3;
-  const static int DEVICE_INDEX_GROUP1 = -4;
-  const static int DEVICE_INDEX_GROUP2 = -5;
-  int deviceAddressToDeviceIndex(DeviceAddress device_address);
-
-  const static DeviceAddress GENERAL_CALL_DEVICE_ADDRESS = 0x00;
-  const static uint8_t SWRST = 0b110;
-
-  // Can write to one or more device at a time
-  // so use address rather than index
-  template<typename T>
-  void write(DeviceAddress device_address,
-    uint8_t register_address,
-    T data);
-  // Can only read from one device at a time
-  // so use index rather than address.
-  // Returns false (and zeroes data) if the I2C transaction fails, so
-  // read-modify-write callers can abort instead of writing back garbage.
-  template<typename T>
-  bool read(DeviceIndex device_index,
-    uint8_t register_address,
-    T & data);
-
-  const static uint8_t MODE1_REGISTER_ADDRESS = 0x00;
-  union Mode1Register
-  {
-    struct
-    {
-      uint8_t allcall : 1;
-      uint8_t sub3 : 1;
-      uint8_t sub2 : 1;
-      uint8_t sub1 : 1;
-      uint8_t sleep : 1;
-      uint8_t ai : 1;
-      uint8_t extclk : 1;
-      uint8_t restart : 1;
-    } fields;
-    uint8_t data;
-  };
-  bool readMode1Register(DeviceIndex device_index,
-    Mode1Register & mode1_register);
-
-  const static uint8_t MODE2_REGISTER_ADDRESS = 0x01;
-  union Mode2Register
-  {
-    struct
-    {
-      uint8_t outne : 2;
-      uint8_t outdrv : 1;
-      uint8_t och : 1;
-      uint8_t invrt : 1;
-      uint8_t space : 3;
-    } fields;
-    uint8_t data;
-  };
-  bool readMode2Register(DeviceIndex device_index,
-    Mode2Register & mode2_register);
-
-  void sleep(DeviceIndex device_index);
-  void wake(DeviceIndex device_index);
-  void wakeAll();
-
-  void setPrescale(DeviceIndex device_index,
-    uint8_t prescale);
-  bool getPrescale(DeviceIndex device_index,
-    uint8_t & prescale);
-  uint8_t frequencyToPrescale(Frequency frequency);
-  Frequency prescaleToFrequency(uint8_t prescale);
-
-  uint8_t channelToDeviceIndex(Channel channel);
-  Channel channelToDeviceChannel(Channel channel);
-
-  void dutyCycleAndPercentDelayToPulseWidthAndPhaseShift(Percent duty_cycle,
-    Percent percent_delay,
-    Duration & pulse_width,
-    Time & phase_shift);
-  void pulseWidthAndPhaseShiftToDutyCycleAndPercentDelay(Duration pulse_width,
-    Duration phase_shift,
-    Percent & duty_cycle,
-    Percent & percent_delay);
-
-  void pulseWidthAndPhaseShiftToOnTimeAndOffTime(Duration pulse_width,
-    Duration phase_shift,
-    Time & on_time,
-    Time & off_time);
-  void onTimeAndOffTimeToPulseWidthAndPhaseShift(Time on_time,
-    Time off_time,
-    Duration & pulse_width,
-    Time & phase_shift);
-
-  void servoPulseDurationToPulseWidthAndPhaseShift(DurationMicroseconds pulse_duration_microseconds,
-    Duration & pulse_width,
-    Time & phase_shift);
-  void pulseWidthAndPhaseShiftToServoPulseDuration(Duration pulse_width,
-    Duration phase_shift,
-    DurationMicroseconds & pulse_duration_microseconds);
-
-  void setOutputsInverted(DeviceIndex device_index);
-  void setOutputsNotInverted(DeviceIndex device_index);
-  void setOutputsToTotemPole(DeviceIndex device_index);
-  void setOutputsToOpenDrain(DeviceIndex device_index);
-  void setOutputsLowWhenDisabled(DeviceIndex device_index);
-  void setOutputsHighWhenDisabled(DeviceIndex device_index);
-  void setOutputsHighImpedanceWhenDisabled(DeviceIndex device_index);
-
-  const static uint8_t DOES_NOT_RESPOND = 0;
-  const static uint8_t DOES_RESPOND = 1;
-  const static uint8_t SUBADR1_REGISTER_ADDRESS = 0x02;
-  const static uint8_t SUBADR2_REGISTER_ADDRESS = 0x03;
-  const static uint8_t SUBADR3_REGISTER_ADDRESS = 0x04;
-  const static uint8_t ALLCALLADR_REGISTER_ADDRESS = 0x05;
-
-  const static uint8_t LED0_ON_L_REGISTER_ADDRESS = 0x06;
-  const static uint8_t LED0_OFF_L_REGISTER_ADDRESS = 0x08;
-  const static uint8_t ALL_LED_ON_L_REGISTER_ADDRESS = 0xFA;
-  const static uint8_t ALL_LED_OFF_L_REGISTER_ADDRESS = 0xFC;
-  const static uint8_t LED_REGISTERS_SIZE = 4;
-  const static uint8_t BITS_PER_BYTE = 8;
-  const static uint8_t BITS_PER_TWO_BYTES = 16;
-  const static uint8_t BYTE_MAX = 0xFF;
-  const static uint16_t TWO_BYTE_MAX = 0xFFFF;
-
-  const static uint8_t PRE_SCALE_REGISTER_ADDRESS = 0xFE;
-  const static uint8_t PRE_SCALE_MIN = 0x03;
-  const static uint8_t PRE_SCALE_MAX = 0xFF;
-  // Use period instead of frequency to calculate prescale since it is linear
-  // Measured 1620 Hz at prescale value 0x03, 1E6/1620=617
-  // Datasheet says it should be 1526 Hz, 1E6/1526=655
-  const static DurationMicroseconds PWM_PERIOD_MIN_US = 617;
-  // Measured 25.3 Hz at prescale value 0xFF, 1E6/25.3=39525
-  // Datasheet says it should be 24 Hz, 1E6/24=41666
-  const static DurationMicroseconds PWM_PERIOD_MAX_US = 39525;
-  const static uint32_t MICROSECONDS_PER_SECOND = 1000000;
-
-  const static uint8_t OUTPUTS_INVERTED = 1;
-  const static uint8_t OUTPUTS_NOT_INVERTED = 0;
-  const static uint8_t OUTPUTS_TOTEM_POLE = 1;
-  const static uint8_t OUTPUTS_OPEN_DRAIN = 0;
-  const static uint8_t OUTPUTS_LOW_WHEN_DISABLED = 0b00;
-  const static uint8_t OUTPUTS_HIGH_WHEN_DISABLED = 0b01;
-  const static uint8_t OUTPUTS_HIGH_IMPEDANCE_WHEN_DISABLED = 0b10;
-
-  const static uint8_t USE_EXTERNAL_CLOCK = 1;
-  const static uint8_t USE_INTERNAL_CLOCK = 0;
-  const static uint8_t SLEEP = 1;
-  const static uint8_t WAKE = 0;
-  const static uint8_t AUTO_INCREMENT_ENABLED = 1;
-  const static uint8_t AUTO_INCREMENT_DISABLED = 0;
-  const static uint8_t RESTART_ENABLED = 1;
-  const static uint8_t RESTART_DISABLED = 0;
-  const static uint8_t RESTART_CLEAR = 1;
-
-  const static Time TIME_MIN = 0;
-  const static Time TIME_MAX = 4096;
-
-  const static uint8_t PERCENT_MIN = 0;
-  const static uint8_t PERCENT_MAX = 100;
-
-  const static Frequency SERVO_FREQUENCY = 50;
-  const static DurationMicroseconds SERVO_PERIOD_MICROSECONDS = 20000;
-
+    TwoWire *_wire = nullptr;
+    uint8_t _address = 0x40;
 };
-
-#endif

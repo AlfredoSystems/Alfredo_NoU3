@@ -1,5 +1,4 @@
-#ifndef ALFREDO_NOU3_H
-#define ALFREDO_NOU3_H
+#pragma once
 
 #include <inttypes.h>
 
@@ -172,7 +171,6 @@ class NoU_Drivetrain {
 
 extern NoU_Agent NoU3;
 extern LSM6Class LSM6;
-extern SFE_MMC5983MA MMC5;
+extern MMC5983MAClass MMC5;
 
 extern PCA9685 pca9685;
-#endif
