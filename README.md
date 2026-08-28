@@ -4,6 +4,10 @@
 
 Library for the Alfredo NoU3. Supports motors and servos, has helper methods for different drivetrain types.
 
+## Sensor fusion
+
+IMU orientation (`NoU3.roll`, `NoU3.pitch`, `NoU3.yaw`, and `NoU3.getQuaternion()`) comes from the [VQF](https://github.com/dlaidig/vqf) sensor fusion algorithm (Laidig & Seel, *Information Fusion* 2023), vendored unmodified in `src/vqf/` (MIT License, © Daniel Laidig). Gyroscope bias is calibrated automatically whenever the robot sits still for about 2 seconds and keeps being tracked during motion, so no calibration steps are required. Optional accuracy tune-ups live in the `CalibrateAccel` and `CalibrateGyroScale` examples.
+
 ## Where to get started
 Go to the the [NoU3 Documentation](https://alfredo-nou3.readthedocs.io/) for tutorials, hardware docs, and API Reference.
 

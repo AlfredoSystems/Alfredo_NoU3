@@ -5,6 +5,7 @@
 #include "Alfredo_NoU3_LSM6.h"
 #include "Alfredo_NoU3_MMC5.h"
 #include "Alfredo_NoU3_PCA9.h"
+#include "Alfredo_NoU3_VQF.h"
 #include "Alfredo_NoU3_encoder.h"
 
 const int PIN_SNS_VERSION = 1;
@@ -65,7 +66,20 @@ class NoU_Agent {
         bool updateMMC5();
 
         void updateAngles();
-        void calibrateIMUs(float gravity_x = 0, float gravity_y = 0, float gravity_z = 1.0);
+
+        // Blocks until the robot has been still long enough for the fusion
+        // filter to detect rest and measure the gyro bias (~1.5 s), then
+        // zeroes yaw at the current heading. Call it in setup() with the
+        // robot sitting in its starting orientation. Returns immediately if
+        // no IMU was detected.
+        void calibrateIMUs();
+
+        // IMU sensor fusion (VQF, 6DOF - the magnetometer is never used):
+        // quaternion, rest detection, automatic gyro bias calibration,
+        // optional calibration hooks, and flash persistence. The library
+        // feeds it sensor samples automatically; sketches call it directly,
+        // e.g. NoU3.fusion.getQuaternion(w, x, y, z). See Alfredo_NoU3_VQF.h.
+        NoU3_VQF fusion{104.0f};  // keep in sync with the LSM6 ODR
 
 		float getBatteryVoltage(){ return analogReadMilliVolts(PIN_SNS_VIN) * 0.001 * 7.818; };
 		float getVersionVoltage(){ return analogReadMilliVolts(PIN_SNS_VERSION) * 0.001 ; };
@@ -76,25 +90,22 @@ class NoU_Agent {
         void setServiceLight(serviceLightState state);
         void updateServiceLight();
 
+        // Raw sensor data: accel in g, gyro in rad/s (bias not removed -
+        // the fusion filter handles bias internally; its estimate is
+        // available via NoU3.fusion.getGyroBias()).
         float acceleration_x=0, acceleration_y=0, acceleration_z=0;
         float gyroscope_x=0, gyroscope_y=0, gyroscope_z=0;
+        // Raw magnetometer data, for legacy boards only: the latest NoU3
+        // has no magnetometer, and it is never used in sensor fusion.
         float magnetometer_x=0, magnetometer_y=0, magnetometer_z=0;
-
-        float acceleration_x_offset = 0, acceleration_y_offset = 0, acceleration_z_offset = 0;
-        float gyroscope_x_offset = 0, gyroscope_y_offset = 0, gyroscope_z_offset = 0;
 
         float roll = 0, pitch = 0, yaw = 0;
 
         volatile serviceLightState stateServiceLight;
 
     private:
-        // Calibration state, guarded by the IMU spinlock: while
-        // calibrationActive is set, updateLSM6() accumulates raw readings
-        // here and calibrateIMUs() averages them into the offsets.
-        bool calibrationActive = false;
-        float calSumAccelX = 0, calSumAccelY = 0, calSumAccelZ = 0;
-        float calSumGyroX = 0, calSumGyroY = 0, calSumGyroZ = 0;
-        uint32_t calNumAccelSamples = 0, calNumGyroSamples = 0;
+        float yawReference = 0;  // published yaw = filter yaw - this (guarded by the IMU spinlock)
+        uint32_t fusionLastEdgeUs = 0;  // previous data-ready edge timestamp
 };
 
 class NoU_Motor {

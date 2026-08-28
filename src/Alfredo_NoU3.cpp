@@ -32,28 +32,45 @@ float fmap(float val, float in_min, float in_max, float out_min, float out_max)
     return (val - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-volatile bool newDataAvailableLSM6 = true;
-volatile bool newDataAvailableMMC5 = true;
+// Timestamp of the most recent LSM6 data-ready edge, captured in the ISR.
+// The measured interval between edges corrects the IMU oscillator error.
+static volatile uint32_t lsm6EdgeMicros = 0;
+
+// The ISRs wake their sensor task directly (no polling): each data-ready
+// edge sends a task notification, and the task blocks until it arrives.
 void interruptRoutineLSM6()
 {
-    newDataAvailableLSM6 = true;
+    lsm6EdgeMicros = micros();
+    if (lsm6_task_handle != NULL)
+    {
+        BaseType_t higherPriorityWoken = pdFALSE;
+        vTaskNotifyGiveFromISR(lsm6_task_handle, &higherPriorityWoken);
+        portYIELD_FROM_ISR(higherPriorityWoken);
+    }
 }
 void interruptRoutineMMC5()
 {
-    newDataAvailableMMC5 = true;
+    if (mmc5_task_handle != NULL)
+    {
+        BaseType_t higherPriorityWoken = pdFALSE;
+        vTaskNotifyGiveFromISR(mmc5_task_handle, &higherPriorityWoken);
+        portYIELD_FROM_ISR(higherPriorityWoken);
+    }
 }
 
 void taskUpdateLSM6(void *pvParameters)
 {
     while (true)
     {
-        // Check LSM6 for new data
-        if (newDataAvailableLSM6)
-        {
-            newDataAvailableLSM6 = false;
-            NoU3.updateLSM6();
-        }
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Block until the data-ready edge (~104 Hz, i.e. every ~9.6 ms).
+        // The timeout is a fallback: if edges stop arriving (or one is
+        // missed), polling at 5 ms keeps samples flowing at close to the
+        // nominal rate, and the read clears data-ready, which re-arms INT1.
+        // (5 ms is shorter than the sample period, so in normal operation
+        // it fires once mid-period and costs one no-op STATUS read - a
+        // deliberate trade for a full-rate degraded mode.)
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5));
+        NoU3.updateLSM6();
     }
 }
 
@@ -61,13 +78,9 @@ void taskUpdateMMC5(void *pvParameters)
 {
     while (true)
     {
-        // Check MMC5983MA for new data
-        if (newDataAvailableMMC5)
-        {
-            newDataAvailableMMC5 = false;
-            NoU3.updateMMC5();
-        }
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // Block until the data-ready edge (100 Hz), with a fallback poll.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+        NoU3.updateMMC5();
     }
 }
 
@@ -142,6 +155,9 @@ void NoU_Agent::beginMotors()
 
 void NoU_Agent::beginIMUs()
 {
+    // Restore saved calibration (accel cal, gyro scale)
+    fusion.loadCalibrationFromFlash();
+
     // Initialize LSM6
     if (LSM6.begin(Wire1) == false)
     {
@@ -149,14 +165,15 @@ void NoU_Agent::beginIMUs()
     }
     else
     {
+        // Tasks are created once and never deleted (deleting a task that is
+        // mid-I2C-transaction would leak the Wire1 bus mutex); re-calling
+        // beginIMUs() re-initializes the sensor and reuses the task. The
+        // task must exist before the interrupt that notifies it is attached.
+        if (lsm6_task_handle == NULL)
+            xTaskCreatePinnedToCore(taskUpdateLSM6, "taskUpdateLSM6", 4096, NULL, 2, &lsm6_task_handle, 1);
         pinMode(PIN_INTERRUPT_LSM6, INPUT);
         attachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_LSM6), interruptRoutineLSM6, RISING);
         LSM6.enableInterrupt(); // LSM6 collects readings at 104 hz
-        // Tasks are created once and never deleted (deleting a task that is
-        // mid-I2C-transaction would leak the Wire1 bus mutex); re-calling
-        // beginIMUs() re-initializes the sensor and reuses the task.
-        if (lsm6_task_handle == NULL)
-            xTaskCreatePinnedToCore(taskUpdateLSM6, "taskUpdateLSM6", 2048, NULL, 2, &lsm6_task_handle, 1);
     }
 
     // Initialize MMC5
@@ -171,61 +188,77 @@ void NoU_Agent::beginIMUs()
         MMC5.setContinuousModeFrequency(100); // Allowed values are 1000, 200, 100, 50, 20, 10, 1 and 0
         MMC5.enableAutomaticSetReset();
         MMC5.enableContinuousMode();
-        pinMode(PIN_INTERRUPT_MMC5, INPUT);
-        attachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_MMC5), interruptRoutineMMC5, RISING);
-        MMC5.enableInterrupt();
 
         if (mmc5_task_handle == NULL)
             xTaskCreatePinnedToCore(taskUpdateMMC5, "taskUpdateMMC5", 2048, NULL, 2, &mmc5_task_handle, 1);
+        pinMode(PIN_INTERRUPT_MMC5, INPUT);
+        attachInterrupt(digitalPinToInterrupt(PIN_INTERRUPT_MMC5), interruptRoutineMMC5, RISING);
+        MMC5.enableInterrupt();
     }
 }
 
 bool NoU_Agent::updateLSM6()
 {
-    bool isNewData = false;
+    // Snapshot the data-ready timestamp before touching the bus: the I2C
+    // reads take a few hundred microseconds, and if the next edge were to
+    // land during them it must not get paired with this sample.
+    uint32_t edgeUs = lsm6EdgeMicros;
 
-    if (LSM6.accelerationAvailable())
-    {
-        float ax, ay, az;
-        LSM6.readAcceleration(&ax, &ay, &az); // result in Gs
-        portENTER_CRITICAL(&imu_mux);
-        acceleration_x = ax - acceleration_x_offset;
-        acceleration_y = ay - acceleration_y_offset;
-        acceleration_z = az - acceleration_z_offset;
-        if (calibrationActive)
-        {
-            calSumAccelX += ax;
-            calSumAccelY += ay;
-            calSumAccelZ += az;
-            calNumAccelSamples++;
-        }
-        portEXIT_CRITICAL(&imu_mux);
+    float gx, gy, gz, ax, ay, az;
+    if (!LSM6.readAccelerationAndGyroscope(&gx, &gy, &gz, &ax, &ay, &az))
+        return false; // no fresh sample (or bus error); nothing to publish
 
-        isNewData = true;
-    }
+    portENTER_CRITICAL(&imu_mux);
+    acceleration_x = ax;
+    acceleration_y = ay;
+    acceleration_z = az;
+    gyroscope_x = gx;
+    gyroscope_y = gy;
+    gyroscope_z = gz;
+    portEXIT_CRITICAL(&imu_mux);
 
-    if (LSM6.gyroscopeAvailable())
-    {
-        float gx, gy, gz;
-        LSM6.readGyroscope(&gx, &gy, &gz); // Results in rad per second
-        portENTER_CRITICAL(&imu_mux);
-        gyroscope_x = gx - gyroscope_x_offset;
-        gyroscope_y = gy - gyroscope_y_offset;
-        gyroscope_z = gz - gyroscope_z_offset;
-        if (calibrationActive)
-        {
-            calSumGyroX += gx;
-            calSumGyroY += gy;
-            calSumGyroZ += gz;
-            calNumGyroSamples++;
-        }
-        updateAngles(); // called inside the lock — reads gyro fields, writes roll/pitch/yaw
-        portEXIT_CRITICAL(&imu_mux);
+    // Feed the fusion filter (outside the spinlock: it is a few hundred
+    // microseconds of math, far too long to hold interrupts off). The
+    // measured time between data-ready edges corrects the IMU oscillator
+    // error; on a fallback poll the edge timestamp hasn't changed, so dt
+    // is 0 and gets gated out by the wrapper.
+    if (fusionLastEdgeUs == 0)
+        fusion.updateGyro(gx, gy, gz);
+    else
+        fusion.updateGyro(gx, gy, gz, (uint32_t)(edgeUs - fusionLastEdgeUs) * 1e-6f);
+    fusionLastEdgeUs = edgeUs;
 
-        isNewData = true;
-    }
+    fusion.updateAccel(ax, ay, az);
 
-    return isNewData;
+    updateAngles();
+
+    return true;
+}
+
+// Publishes the filter orientation into the roll/pitch/yaw fields. Called
+// automatically after every sensor update.
+void NoU_Agent::updateAngles()
+{
+    // NoU3 angle convention (matching what the old gyro integration
+    // produced): pitch is rotation about the board X axis, roll about Y,
+    // yaw about Z. In standard ZYX terms that swaps the first two names,
+    // hence pitch from getRoll() and roll from getPitch(). All in radians.
+    // Roll and pitch are absolute (gravity referenced); yaw is relative to
+    // the startup heading.
+    float yawRaw = fusion.getYaw();
+    float rollOut = fusion.getPitch();
+    float pitchOut = fusion.getRoll();
+
+    portENTER_CRITICAL(&imu_mux);
+    float yawOut = yawRaw - yawReference;
+    if (yawOut > (float)PI)
+        yawOut -= 2.0f * (float)PI;
+    else if (yawOut < -(float)PI)
+        yawOut += 2.0f * (float)PI;
+    roll = rollOut;
+    pitch = pitchOut;
+    yaw = yawOut;
+    portEXIT_CRITICAL(&imu_mux);
 }
 
 bool NoU_Agent::updateMMC5()
@@ -247,65 +280,23 @@ bool NoU_Agent::updateMMC5()
     return isNewData;
 }
 
-void NoU_Agent::updateAngles()
+void NoU_Agent::calibrateIMUs()
 {
-    // micros(), not millis(): samples arrive every ~9.6 ms (104 Hz), so
-    // millisecond resolution would put ~10% jitter on each timestep.
-    static bool firstSample = true;
-    static unsigned long lastTimeUs = 0;
+    // Setting up a robot means putting it down and leaving it alone for a
+    // moment anyway - so tie the yaw zero to that: block until the fusion
+    // filter detects rest (~1.5 s of stillness), which is also the moment
+    // it measures and removes the gyro bias. Yaw is then zeroed at the
+    // current heading and starts out drift-free. Roll and pitch are
+    // gravity-referenced and are never reset - they always show true tilt.
+    if (lsm6_task_handle == NULL)
+        return; // no IMU detected; don't wait for a rest that can't come
 
-    unsigned long currentTimeUs = micros();
+    while (!fusion.isResting())
+        vTaskDelay(pdMS_TO_TICKS(10));
 
-    if (firstSample)
-    {
-        firstSample = false;
-        lastTimeUs = currentTimeUs;
-        return;
-    }
-
-    float timestep = (currentTimeUs - lastTimeUs) / 1000000.0; // convert us to seconds
-    lastTimeUs = currentTimeUs;
-
-    float deltaPitch = gyroscope_x * timestep;
-    float deltaRoll = gyroscope_y * timestep;
-    float deltaYaw = gyroscope_z * timestep;
-
-    pitch += deltaPitch;
-    roll += deltaRoll;
-    yaw += deltaYaw;
-}
-
-void NoU_Agent::calibrateIMUs(float gravity_x, float gravity_y, float gravity_z)
-{
-    // The background task stays the only reader of the sensor. While
-    // calibrationActive is set, updateLSM6() accumulates raw readings into
-    // the calSum* fields; we just wait a second and average them.
+    float yawNow = fusion.getYaw();
     portENTER_CRITICAL(&imu_mux);
-    calSumAccelX = calSumAccelY = calSumAccelZ = 0;
-    calSumGyroX = calSumGyroY = calSumGyroZ = 0;
-    calNumAccelSamples = 0;
-    calNumGyroSamples = 0;
-    calibrationActive = true;
-    portEXIT_CRITICAL(&imu_mux);
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    portENTER_CRITICAL(&imu_mux);
-    calibrationActive = false;
-    if (calNumAccelSamples > 0)
-    {
-        acceleration_x_offset = (calSumAccelX / calNumAccelSamples) - gravity_x;
-        acceleration_y_offset = (calSumAccelY / calNumAccelSamples) - gravity_y;
-        acceleration_z_offset = (calSumAccelZ / calNumAccelSamples) - gravity_z;
-    }
-    if (calNumGyroSamples > 0)
-    {
-        gyroscope_x_offset = calSumGyroX / calNumGyroSamples;
-        gyroscope_y_offset = calSumGyroY / calNumGyroSamples;
-        gyroscope_z_offset = calSumGyroZ / calNumGyroSamples;
-    }
-    roll = 0;
-    pitch = 0;
+    yawReference = yawNow;
     yaw = 0;
     portEXIT_CRITICAL(&imu_mux);
 }

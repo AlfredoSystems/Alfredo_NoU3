@@ -50,6 +50,31 @@ class LSM6Class {
       return 1;
     }
 
+    // Combined read: one STATUS check, then a single 12-byte burst over the
+    // contiguous gyro + accel output registers - a third of the bus time of
+    // reading each sensor separately, and both samples are guaranteed to be
+    // from the same instant. Returns 1 with all outputs filled on success;
+    // 0 if either sensor has no fresh sample or the transaction failed.
+    // Units and axis convention match readGyroscope()/readAcceleration().
+    int readAccelerationAndGyroscope(float *gx, float *gy, float *gz,
+                                     float *ax, float *ay, float *az) {
+      int status = readRegister(REG_STATUS);
+      if (status < 0 || (status & 0x03) != 0x03)
+        return 0;
+      int16_t raw[6];  // gyro X,Y,Z then accel X,Y,Z
+      if (!readRegisters(REG_OUTX_L_G, (uint8_t *)raw, sizeof(raw))) {
+        *gx = *gy = *gz = *ax = *ay = *az = NAN;
+        return 0;
+      }
+      *gx = raw[1] * 0.0175 * (PI / 180.0);
+      *gy = -raw[0] * 0.0175 * (PI / 180.0);
+      *gz = raw[2] * 0.0175 * (PI / 180.0);
+      *ax = raw[4] * 4.0 / 32768.0;
+      *ay = -raw[3] * 4.0 / 32768.0;
+      *az = raw[5] * 4.0 / 32768.0;
+      return 1;
+    }
+
     // Angular rate in rad/s, NoU3 axis convention. Returns 1 on success;
     // on failure the outputs are set to NAN.
     int readGyroscope(float *x, float *y, float *z) {
