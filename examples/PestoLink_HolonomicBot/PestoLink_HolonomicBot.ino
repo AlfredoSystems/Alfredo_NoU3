@@ -6,7 +6,7 @@
 #include <PestoLink-Receive.h>
 #include <Alfredo_NoU3.h>
 
-// If your robot has more than a drivetrain, add those actuators here 
+// If your robot has more than a drivetrain, add those actuators here
 NoU_Motor frontLeftMotor(1);
 NoU_Motor frontRightMotor(2);
 NoU_Motor rearLeftMotor(3);
@@ -15,13 +15,10 @@ NoU_Motor rearRightMotor(4);
 // This creates the drivetrain object, you shouldn't have to mess with this
 NoU_Drivetrain drivetrain(&frontLeftMotor, &frontRightMotor, &rearLeftMotor, &rearRightMotor);
 
-//------------------------------ CRITICAL CALIBRATION INFO --------------------------------//
-//Your gyroscope "out of the box" will always read a little high or a little low. This is fixable by adjusting the angular scale factor.
-//Tuning procedure: 
-//Rotate the robot in place exactly 5 times. Use the Serial printout to read the current gyro angle in Radians, we will call this "measured_angle".
-//measured_angle should be nearly 31.416 which is 5*2*pi. Update measured_angle below to complete the tuning process. 
-float measured_angle = 31.416;
-float angular_scale = (5.0*2.0*PI) / measured_angle;
+// If yaw reads a few degrees short or long per rotation (spin the robot 5 
+// times and check), run the CalibrateGyroScale example. It measures your
+// gyro's scale error and saves the fix to flash, and every sketch (including
+// this one) loads it automatically at NoU3.begin().
 
 void setup() {
     //EVERYONE SHOULD CHANGE "NoU3_Bluetooth" TO THE NAME OF THEIR ROBOT HERE
@@ -33,17 +30,15 @@ void setup() {
     frontLeftMotor.setInverted(true);
     rearLeftMotor.setInverted(true);
 
-    //give the driver two seconds to set the robot down before starting calibration
-    delay(2000);
+    // Set the robot down pointing "field forward" before powering on.
     NoU3.setServiceLight(LIGHT_CALIBRATING);
-    // calibration takes exactly one second. Do not move the robot during calibration.
     NoU3.calibrateIMUs();
 }
 
 void loop() {
     static unsigned long lastPrintTime = 0;
     if (lastPrintTime + 100 < millis()){
-        Serial.printf("gyro yaw (radians): %.3f\r\n",  NoU3.yaw * angular_scale );
+        Serial.printf("gyro yaw (radians): %.3f\r\n",  NoU3.yaw );
         lastPrintTime = millis();
     }
 
@@ -57,7 +52,7 @@ void loop() {
         float rotationPower = -1 * PestoLink.getAxis(2);
 
         // Get robot heading (in radians) from the gyro
-        float heading = NoU3.yaw * angular_scale;
+        float heading = NoU3.yaw;
 
         // Rotate joystick vector to be robot-centric
         float cosA = cos(heading);
